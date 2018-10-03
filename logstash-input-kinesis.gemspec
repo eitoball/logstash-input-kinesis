@@ -22,7 +22,7 @@ Gem::Specification.new do |spec|
 
   spec.platform      = 'java'
 
-  spec.requirements << "jar 'com.amazonaws:amazon-kinesis-client', '1.9.2'"
+  spec.requirements << "jar 'software.amazon.kinesis:amazon-kinesis-client', '2.0.1'"
   spec.requirements << "jar 'com.amazonaws:aws-java-sdk-core', '1.11.414'"
 
   spec.add_runtime_dependency "logstash-core-plugin-api", ">= 1.60", "<= 2.99"
