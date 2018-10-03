@@ -1,6 +1,6 @@
 # encoding: utf-8
-class LogStash::Inputs::Kinesis::Worker
-  include com.amazonaws.services.kinesis.clientlibrary.interfaces.v2::IRecordProcessor
+class LogStash::Inputs::Kinesis::RecordProcessor
+  include Java::SoftwareAmazonKinesisProcessor::ShardRecordProcessor
 
   attr_reader(
     :checkpoint_interval,
@@ -30,19 +30,26 @@ class LogStash::Inputs::Kinesis::Worker
     end
   end
 
-  def shutdown(shutdown_input)
-    if shutdown_input.shutdown_reason == com.amazonaws.services.kinesis.clientlibrary.lib.worker::ShutdownReason::TERMINATE
-      checkpoint(shutdown_input.checkpointer)
+  def leaseLost(leaseLogInput)
+  end
+
+  def shardEnded(shardEndedInput)
+    begin
+      shardEndedInput.checkpointer().checkpoint()
+    rescue Java::SoftwareAmazonKinesisException::ShutdownException, Java::SoftwareAmazonKinesisException::InvalidStateException => error
+    @logger.error("Kinesis worker failed checkpointing: #{error}")
+    end
+  end
+
+  def shutdownRequested(shutdownRequestedInput)
+    begin
+      shutdownRequestedInput.checkpointer().checkpoint()
+    rescue Java::SoftwareAmazonKinesisException::ShutdownException, Java::SoftwareAmazonKinesisException::InvalidStateException => error
+      @logger.error("Kinesis worker failed checkpointing: #{error}")
     end
   end
 
   protected
-
-  def checkpoint(checkpointer)
-    checkpointer.checkpoint()
-  rescue => error
-    @logger.error("Kinesis worker failed checkpointing: #{error}")
-  end
 
   def process_record(record)
     raw = String.from_java_bytes(record.getData.array)
@@ -63,5 +70,4 @@ class LogStash::Inputs::Kinesis::Worker
     metadata['sequence_number'] = record.getSequenceNumber
     metadata
   end
-
 end
