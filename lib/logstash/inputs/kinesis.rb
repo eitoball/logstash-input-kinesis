@@ -5,6 +5,7 @@ require "logstash/environment"
 require "logstash/namespace"
 
 require 'logstash-input-kinesis_jars'
+# require "logstash/inputs/kinesis/record_processor_factory"
 require "logstash/inputs/kinesis/version"
 
 
@@ -22,9 +23,9 @@ require "logstash/inputs/kinesis/version"
 #
 # The library can optionally also send worker statistics to CloudWatch.
 class LogStash::Inputs::Kinesis < LogStash::Inputs::Base
-  KCL = com.amazonaws.services.kinesis.clientlibrary.lib.worker
-  KCL_PROCESSOR_FACTORY_CLASS = com.amazonaws.services.kinesis.clientlibrary.interfaces.v2.IRecordProcessorFactory
-  require "logstash/inputs/kinesis/worker"
+  #KCL = com.amazonaws.services.kinesis.clientlibrary.lib.worker
+  #KCL_PROCESSOR_FACTORY_CLASS = com.amazonaws.services.kinesis.clientlibrary.interfaces.v2.IRecordProcessorFactory
+  require "logstash/inputs/kinesis/record_processor_factory"
 
   config_name 'kinesis'
 
@@ -73,41 +74,63 @@ class LogStash::Inputs::Kinesis < LogStash::Inputs::Base
 
     # If the AWS profile is set, use the profile credentials provider.
     # Otherwise fall back to the default chain.
-    unless @profile.nil?
-      creds = com.amazonaws.auth.profile::ProfileCredentialsProvider.new(@profile)
+    creds = unless @profile.nil?
+      Java::SoftwareAwssdkAuthCredentials::ProfileCredentialsProvider.new(@profile)
     else
-      creds = com.amazonaws.auth::DefaultAWSCredentialsProviderChain.new
-    end
-    initial_position_in_stream = if @initial_position_in_stream == "TRIM_HORIZON"
-      KCL::InitialPositionInStream::TRIM_HORIZON
-    else
-      KCL::InitialPositionInStream::LATEST
+      Java::SoftwareAwssdkAuthCredentials::DefaultAWSCredentialsProviderChain.new
     end
 
-    @kcl_config = KCL::KinesisClientLibConfiguration.new(
-      @application_name,
-      @kinesis_stream_name,
-      creds,
-      worker_id).
-        withInitialPositionInStream(initial_position_in_stream).
-        withRegionName(@region)
+    kinesis_client = Java::SoftwareAmazonAwssdkServicesKinesis::KinesisAsyncClient
+      .builder
+      .region(Java::SoftwareAmazonAwssdkRegions::Region.of(@region))
+      .credentialProvider(creds)
+      .build
+    @configs_builder = Java::SoftwareAmazonKinesisCommon::ConfigsBuilder.new(
+    @kinesis_stream_name,
+    @application_name,
+    kinesis_client,
+    nil, # dynamodb_factory
+    nil, # cloudwatch_factory
+    worker_id,
+    RecordProcessorFactory.new
+    )
+
+    initial_position_in_stream = if @initial_position_in_stream == "TRIM_HORIZON"
+      Java::SoftwareAmazonKinesisCommon::InitialPositionInStream::TRIM_HORIZON
+    else
+      Java::SoftwareAmazonKinesisCommon::InitialPositionInStream::LATEST
+    end
+    @retrieval_config = @configs_builder.retrievalConfig
+    @retrieval_config.initialPositionInStreamExtended =
+      Java::SoftwareAmazonKinesisCommon::InitialPositionInStreamExtended.new(initial_position_in_stream)
   end
 
   def run(output_queue)
-    @kcl_worker = kcl_builder(output_queue).build
-    @kcl_worker.run
+    kcl_builder(output_queue)
   end
 
   def kcl_builder(output_queue)
-    KCL::Worker::Builder.new.tap do |builder|
-      builder.java_send(:recordProcessorFactory, [KCL_PROCESSOR_FACTORY_CLASS.java_class], worker_factory(output_queue))
-      builder.config(@kcl_config)
-
-      if metrics_factory
-        builder.metricsFactory(metrics_factory)
-      end
-    end
+    @scheduler = Java::SoftwareAmazonKinesisCoordinator::Scheduler.new(
+      @configs_builder.checkpointConfig,
+      @configs_builder.coordinatorConfig,
+      @configs_builder.leaseManagementConfig,
+      @configs_builder.lifecycleConfig,
+      @configs_builder.metricsConfig,
+      @configs_builder.processorConfig,
+      @retrieval_config
+    )
   end
+
+  # def kcl_builder(output_queue)
+  #   KCL::Worker::Builder.new.tap do |builder|
+  #     builder.java_send(:recordProcessorFactory, [KCL_PROCESSOR_FACTORY_CLASS.java_class], worker_factory(output_queue))
+  #     builder.config(@kcl_config)
+  #
+  #     if metrics_factory
+  #       builder.metricsFactory(metrics_factory)
+  #     end
+  #   end
+  # end
 
   def stop
     @kcl_worker.shutdown if @kcl_worker
